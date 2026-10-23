@@ -119,3 +119,7 @@ If Starmancer receives an official update through Steam, Steam will replace `Sta
 ## 📜 License
 
 This project is licensed under the [MIT License](LICENSE).
+
+## 🤖 AI Disclosure
+
+This project was partially made with Gemini 3.8 Flash using the anti-gravity editor.
