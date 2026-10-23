@@ -221,7 +221,7 @@ $leakType = $mainMod.GetType('World.Atmosphere.AtmosphereLeakToSpaceComponent')
 
 $leakField = $leakType.Fields | Where-Object { $_.Name -eq 'leakCounter_' }
 if (-not $leakField) {
-    $leakField = New-Object Mono.Cecil.FieldDefinition('leakCounter_', [Mono.Cecil.FieldAttributes]::Public, $mainMod.TypeSystem.Int32)
+    $leakField = New-Object Mono.Cecil.FieldDefinition('leakCounter_', [Mono.Cecil.FieldAttributes]::Private, $mainMod.TypeSystem.Int32)
     $leakType.Fields.Add($leakField)
 }
 
