@@ -1,0 +1,8 @@
+*.orig
+*.patched
+*.test
+bin/
+obj/
+.vs/
+.idea/
+*.user
