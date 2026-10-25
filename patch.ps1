@@ -1,90 +1,32 @@
 param(
-    [string]$GamePath = ""
+    [string]$GameRoot = 'D:\SteamLibrary\steamapps\common\Starmancer'
 )
 
 $ErrorActionPreference = 'Stop'
 $scriptDir = $PSScriptRoot
+$managed = Join-Path $GameRoot 'Starmancer_Data\Managed'
+$targetDll = Join-Path $managed 'StarmancerMod.dll'
+$backupDll = Join-Path $managed 'StarmancerMod.dll.orig'
 $cecilDll = Join-Path $scriptDir 'Cecil\Mono.Cecil.dll'
 
-Write-Host "==========================================================" -ForegroundColor Cyan
-Write-Host " Starmancer Atmosphere, Thermal & Phantom Leak Fix Patcher" -ForegroundColor Cyan
-Write-Host "==========================================================" -ForegroundColor Cyan
-Write-Host ""
-
-if (-not (Test-Path $cecilDll)) {
-    Write-Error "Could not find Cecil dependencies at '$cecilDll'."
+if (-not (Test-Path $targetDll)) {
+    Write-Error "StarmancerMod.dll not found at '$targetDll'. Check your GameRoot path."
     exit 1
 }
 
-# 1. Find Game Directory
-$resolvedGamePath = ""
-$candidates = @()
+Write-Host "=== Reapplying Starmancer Thermal, NaN & Adjacency Fix ===" -ForegroundColor Cyan
 
-if (-not [string]::IsNullOrWhiteSpace($GamePath)) {
-    $candidates += $GamePath
-}
-
-# Check parent directory (if user unzipped inside Starmancer folder)
-$candidates += (Join-Path $scriptDir '..')
-$candidates += $scriptDir
-
-# Common Steam library locations
-$candidates += 'D:\SteamLibrary\steamapps\common\Starmancer'
-$candidates += 'C:\Program Files (x86)\Steam\steamapps\common\Starmancer'
-$candidates += 'C:\SteamLibrary\steamapps\common\Starmancer'
-$candidates += 'E:\SteamLibrary\steamapps\common\Starmancer'
-$candidates += 'F:\SteamLibrary\steamapps\common\Starmancer'
-$candidates += 'S:\SteamLibrary\steamapps\common\Starmancer'
-
-# Steam registry path detection
-try {
-    $steamPath = (Get-ItemProperty -Path 'HKCU:\Software\Valve\Steam' -ErrorAction SilentlyContinue).SteamPath
-    if ($steamPath) {
-        $candidates += (Join-Path $steamPath 'steamapps\common\Starmancer')
-    }
-} catch {}
-
-foreach ($cand in $candidates) {
-    if (-not [string]::IsNullOrWhiteSpace($cand) -and (Test-Path $cand)) {
-        $testTarget = Join-Path $cand 'Starmancer_Data\Managed\StarmancerMod.dll'
-        if (Test-Path $testTarget) {
-            $resolvedGamePath = (Resolve-Path $cand).Path
-            break
-        }
-    }
-}
-
-while ([string]::IsNullOrWhiteSpace($resolvedGamePath) -or (-not (Test-Path (Join-Path $resolvedGamePath 'Starmancer_Data\Managed\StarmancerMod.dll')))) {
-    Write-Host "Could not automatically detect Starmancer installation." -ForegroundColor Yellow
-    $userInput = Read-Host "Please enter your Starmancer game folder (e.g. C:\SteamLibrary\steamapps\common\Starmancer)"
-    if ([string]::IsNullOrWhiteSpace($userInput)) {
-        Write-Error "No path provided. Aborting installation."
-        exit 1
-    }
-    $resolvedGamePath = $userInput.Trim('"', "'")
-}
-
-Write-Host "Target Starmancer Path: $resolvedGamePath" -ForegroundColor Green
-
-$managedDir = Join-Path $resolvedGamePath 'Starmancer_Data\Managed'
-$targetDll = Join-Path $managedDir 'StarmancerMod.dll'
-$backupDll = Join-Path $managedDir 'StarmancerMod.dll.orig'
-
-# 2. Backup vanilla file
+# Backup the fresh reinstalled vanilla DLL if not already backed up
 if (-not (Test-Path $backupDll)) {
-    Write-Host "Creating backup of original assembly: $backupDll" -ForegroundColor Yellow
     Copy-Item $targetDll $backupDll -Force
-} else {
-    Write-Host "Using existing vanilla backup: $backupDll" -ForegroundColor DarkGray
+    Write-Host "Created backup of fresh vanilla DLL: $backupDll" -ForegroundColor Green
 }
 
-# 3. Apply Cecil Patches
-Write-Host "Applying bytecode modifications via Mono.Cecil..." -ForegroundColor Cyan
-
+# Load Cecil from backup folder
 Add-Type -Path $cecilDll
 
 $resolver = New-Object Mono.Cecil.DefaultAssemblyResolver
-$resolver.AddSearchDirectory($managedDir)
+$resolver.AddSearchDirectory($managed)
 
 $readerParams = New-Object Mono.Cecil.ReaderParameters
 $readerParams.ReadWrite = $false
@@ -101,8 +43,9 @@ $isInfMethodDef = $singleDef.Methods | Where-Object { $_.Name -eq 'IsInfinity' -
 $isNaNRef = $mainMod.ImportReference($isNaNMethodDef)
 $isInfRef = $mainMod.ImportReference($isInfMethodDef)
 
-# --- PATCH 1: AtmosphereFlowDaemonComponent.CalculateAverages ---
-# Fix: Prevent 0/0 = NaN when num2 == 0 (unpressurized rooms)
+# =========================================================================
+# PATCH 1: AtmosphereFlowDaemonComponent.CalculateAverages (num2<=0 fallback)
+# =========================================================================
 $daemonType = $mainMod.GetType('World.Atmosphere.Flow.AtmosphereFlowDaemonComponent')
 $calcAvgMethod = $daemonType.Methods | Where-Object { $_.Name -eq 'CalculateAverages' }
 $il = $calcAvgMethod.Body.GetILProcessor()
@@ -134,10 +77,10 @@ $il.InsertAfter($stindR4, $ilBranchEnd)
 $il.InsertAfter($ilBranchEnd, $ilZeroPress)
 $il.InsertAfter($ilZeroPress, $set21)
 $il.InsertAfter($set21, $store21)
-Write-Host "  [1/4] Patched CalculateAverages (0/0 division protection)" -ForegroundColor Green
 
-# --- PATCH 2: PeriodicTemperatureExchangerComponent.TransferHeat ---
-# Fix: Abort heat transfer immediately if either room is NaN or Infinity
+# =========================================================================
+# PATCH 2: PeriodicTemperatureExchangerComponent.TransferHeat (abort on NaN/Inf)
+# =========================================================================
 $ventType = $mainMod.GetType('World.Atmosphere.Vent.PeriodicTemperatureExchangerComponent')
 $transferHeatMethod = $ventType.Methods | Where-Object { $_.Name -eq 'TransferHeat' -and $_.Parameters.Count -eq 2 }
 $ilVent = $transferHeatMethod.Body.GetILProcessor()
@@ -167,10 +110,10 @@ foreach ($g in $guardInstructions) {
     $ilVent.InsertAfter($insPt, $g)
     $insPt = $g
 }
-Write-Host "  [2/4] Patched TransferHeat (aborts -273C cascading drain)" -ForegroundColor Green
 
-# --- PATCH 3: AtmosphereUnit.MoveToAverage ---
-# Fix: Sanitize incoming average & auto-heal corrupted tiles in existing save files
+# =========================================================================
+# PATCH 3: AtmosphereUnit.MoveToAverage (heal NaN / < -273.15C to 21C)
+# =========================================================================
 $unitType = $mainMod.GetType('Starmancer.Agent.Components.Atmosphere.AtmosphereUnit')
 $moveToAvgMethod = $unitType.Methods | Where-Object { $_.Name -eq 'MoveToAverage' }
 $ilUnit = $moveToAvgMethod.Body.GetILProcessor()
@@ -213,20 +156,24 @@ $ilUnit.InsertBefore($firstInstr, $healFloor)
 $ilUnit.InsertBefore($firstInstr, $ilUnit.Create([Mono.Cecil.Cil.OpCodes]::Ldfld, $tempFieldRef))
 $ilUnit.InsertBefore($firstInstr, $ilUnit.Create([Mono.Cecil.Cil.OpCodes]::Ldc_R4, [single]21.0))
 $ilUnit.InsertBefore($firstInstr, $ilUnit.Create([Mono.Cecil.Cil.OpCodes]::Stfld, $tempValFieldRef))
-Write-Host "  [3/4] Patched MoveToAverage (auto-heals corrupt tiles & saves)" -ForegroundColor Green
 
-# --- PATCH 4: AtmosphereLeakToSpaceComponent ---
-# Fix: Periodic 10-leak counter triggers room adjacency refresh to eliminate phantom leaks
+# =========================================================================
+# PATCH 4: AtmosphereLeakToSpaceComponent (leak counter & room adjacency test every 10 leaks)
+# =========================================================================
 $leakType = $mainMod.GetType('World.Atmosphere.AtmosphereLeakToSpaceComponent')
 
+# 1. Add leakCounter_ field
 $leakField = $leakType.Fields | Where-Object { $_.Name -eq 'leakCounter_' }
 if (-not $leakField) {
     $leakField = New-Object Mono.Cecil.FieldDefinition('leakCounter_', [Mono.Cecil.FieldAttributes]::Private, $mainMod.TypeSystem.Int32)
     $leakType.Fields.Add($leakField)
 }
 
+# 2. Build RefreshRoomAdjacency method
 $refreshMethod = $leakType.Methods | Where-Object { $_.Name -eq 'RefreshRoomAdjacency' }
-if ($refreshMethod) { $leakType.Methods.Remove($refreshMethod) }
+if ($refreshMethod) {
+    $leakType.Methods.Remove($refreshMethod)
+}
 
 $agentType = $mainMod.GetType('Starmancer.Agent.Components.GameObjectAgent')
 $agentRefType = $mainMod.GetType('Starmancer.Agent.Components.GameObjectAgentNonPrefabReference')
@@ -247,21 +194,18 @@ $listOfObjType = $mainMod.GetType('Starmancer.Engine.ListOfObjects`1')
 $genericListOfAgents = New-Object Mono.Cecil.GenericInstanceType($listOfObjType)
 $genericListOfAgents.GenericArguments.Add($agentRefType)
 
-$refreshMethod.Body.Variables.Add((New-Object Mono.Cecil.Cil.VariableDefinition($genericListOfAgents)))
-$refreshMethod.Body.Variables.Add((New-Object Mono.Cecil.Cil.VariableDefinition($mainMod.TypeSystem.Int32)))
-$refreshMethod.Body.Variables.Add((New-Object Mono.Cecil.Cil.VariableDefinition($agentRefType)))
-$refreshMethod.Body.Variables.Add((New-Object Mono.Cecil.Cil.VariableDefinition($mainMod.TypeSystem.Int32)))
+$refreshMethod.Body.Variables.Add((New-Object Mono.Cecil.Cil.VariableDefinition($genericListOfAgents))) # 0
+$refreshMethod.Body.Variables.Add((New-Object Mono.Cecil.Cil.VariableDefinition($mainMod.TypeSystem.Int32))) # 1
+$refreshMethod.Body.Variables.Add((New-Object Mono.Cecil.Cil.VariableDefinition($agentRefType))) # 2
+$refreshMethod.Body.Variables.Add((New-Object Mono.Cecil.Cil.VariableDefinition($mainMod.TypeSystem.Int32))) # 3
 
 $roomTypeField = $leakType.Fields | Where-Object { $_.Name -eq 'roomType' }
 $queryAgentsMethod = $roomParamType.Methods | Where-Object { $_.Name -eq 'Query_allAgentsInRoom_DoNotCache' }
 
-$isLeakValid = $leakType.Methods | Where-Object { $_.Name -eq 'IsLeakValid' }
-$getCountMethodRef = ($isLeakValid.Body.Instructions | Where-Object { $_.OpCode -eq [Mono.Cecil.Cil.OpCodes]::Callvirt }).Operand
-$listGenericType = $getCountMethodRef.DeclaringType
-
-$getItemMethodRef = New-Object Mono.Cecil.MethodReference('get_Item', $agentRefType, $listGenericType)
-$getItemMethodRef.HasThis = $true
-$getItemMethodRef.Parameters.Add((New-Object Mono.Cecil.ParameterDefinition($mainMod.TypeSystem.Int32)))
+$blueprintType = $mainMod.GetType('World.AI.Pathfinding.GoToOrder.GoToFloorOrderBlueprintComponent')
+$isThereObjectMethod = $blueprintType.Methods | Where-Object { $_.Name -eq 'IsThereAnObjectOnFloor' -and $_.Parameters[0].ParameterType.Name -like '*ListOfObjects*' }
+$getCountMethodRef = ($isThereObjectMethod.Body.Instructions | Where-Object { $_.OpCode -eq [Mono.Cecil.Cil.OpCodes]::Callvirt -and $_.Operand.Name -eq 'get_Count' }).Operand
+$getItemMethodRef = ($isThereObjectMethod.Body.Instructions | Where-Object { $_.OpCode -eq [Mono.Cecil.Cil.OpCodes]::Callvirt -and $_.Operand.Name -eq 'get_Item' }).Operand
 
 $agentRefField = $agentRefType.Fields | Where-Object { $_.Name -eq 'agentReference' }
 $onRefreshEventField = $eventNameType.Fields | Where-Object { $_.Name -eq 'OnRefreshAdjacentObjects' }
@@ -277,18 +221,22 @@ $agentField = $agentCompType.Fields | Where-Object { $_.Name -eq 'agent_' }
 $lblElseAgent = $ilRefresh.Create([Mono.Cecil.Cil.OpCodes]::Nop)
 $lblRet = $ilRefresh.Create([Mono.Cecil.Cil.OpCodes]::Ret)
 
-$ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Ldarg_1)
+$ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Ldarg_1) # room
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Brfalse_S, $lblElseAgent)
+
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Ldarg_1)
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Ldarg_0)
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Ldfld, $roomTypeField)
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Call, $queryAgentsMethod)
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Stloc_0)
+
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Ldloc_0)
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Brfalse_S, $lblRet)
+
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Ldloc_0)
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Callvirt, $getCountMethodRef)
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Stloc_3)
+
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Ldc_I4_0)
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Stloc_1)
 
@@ -296,17 +244,21 @@ $lblLoopCheck = $ilRefresh.Create([Mono.Cecil.Cil.OpCodes]::Ldloc_1)
 $lblLoopBody = $ilRefresh.Create([Mono.Cecil.Cil.OpCodes]::Ldloc_0)
 
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Br_S, $lblLoopCheck)
+
 $ilRefresh.Append($lblLoopBody)
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Ldloc_1)
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Callvirt, $getItemMethodRef)
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Stloc_2)
 
 $lblLoopInc = $ilRefresh.Create([Mono.Cecil.Cil.OpCodes]::Ldloc_1)
+
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Ldloc_2)
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Brfalse_S, $lblLoopInc)
+
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Ldloc_2)
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Ldfld, $agentRefField)
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Brfalse_S, $lblLoopInc)
+
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Ldloc_2)
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Ldfld, $agentRefField)
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Ldsfld, $onRefreshEventField)
@@ -322,27 +274,38 @@ $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Stloc_1)
 $ilRefresh.Append($lblLoopCheck)
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Ldloc_3)
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Blt_S, $lblLoopBody)
+
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Br_S, $lblRet)
 
 $ilRefresh.Append($lblElseAgent)
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Ldarg_0)
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Ldfld, $agentField)
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Brfalse_S, $lblRet)
+
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Ldarg_0)
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Ldfld, $agentField)
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Ldsfld, $onRefreshEventField)
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Call, $eventImplicit)
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Call, $getBaseParamMethod)
 $ilRefresh.Emit([Mono.Cecil.Cil.OpCodes]::Callvirt, $genCallEvent)
+
 $ilRefresh.Append($lblRet)
 
-# Patch OnLeakAtmosphere
+# 3. Patch OnLeakAtmosphere
 $leakMethod = $leakType.Methods | Where-Object { $_.Name -eq 'OnLeakAtmosphere' }
 $ilLeak = $leakMethod.Body.GetILProcessor()
-$brtrueInstr = ($leakMethod.Body.Instructions | Where-Object { $_.OpCode -eq [Mono.Cecil.Cil.OpCodes]::Brtrue_S })[0]
+
+$brtrueInstr = $null
+foreach ($inst in $leakMethod.Body.Instructions) {
+    if ($inst.OpCode -eq [Mono.Cecil.Cil.OpCodes]::Brtrue_S) {
+        $brtrueInstr = $inst
+        break
+    }
+}
 $targetInstr = $brtrueInstr.Operand
 
 $lblSkipRefresh = $ilLeak.Create([Mono.Cecil.Cil.OpCodes]::Nop)
+
 $counterInstructions = @(
     $ilLeak.Create([Mono.Cecil.Cil.OpCodes]::Ldarg_0),
     $ilLeak.Create([Mono.Cecil.Cil.OpCodes]::Ldarg_0),
@@ -366,12 +329,15 @@ $counterInstructions = @(
 
     $lblSkipRefresh
 )
-$brtrueInstr.Operand = $counterInstructions[0]
+
+$firstCounterInstr = $counterInstructions[0]
+$brtrueInstr.Operand = $firstCounterInstr
+
 foreach ($ci in $counterInstructions) {
     $ilLeak.InsertBefore($targetInstr, $ci)
 }
 
-# Patch OnNotLeakingAtmosphere
+# 4. Patch OnNotLeakingAtmosphere: reset leakCounter_ = 0
 $notLeakingMethod = $leakType.Methods | Where-Object { $_.Name -eq 'OnNotLeakingAtmosphere' }
 $ilNotLeaking = $notLeakingMethod.Body.GetILProcessor()
 $firstNotLeakInstr = $notLeakingMethod.Body.Instructions[0]
@@ -380,18 +346,274 @@ $ilNotLeaking.InsertBefore($firstNotLeakInstr, $ilNotLeaking.Create([Mono.Cecil.
 $ilNotLeaking.InsertBefore($firstNotLeakInstr, $ilNotLeaking.Create([Mono.Cecil.Cil.OpCodes]::Ldc_I4_0))
 $ilNotLeaking.InsertBefore($firstNotLeakInstr, $ilNotLeaking.Create([Mono.Cecil.Cil.OpCodes]::Stfld, $leakField))
 
-Write-Host "  [4/4] Patched AtmosphereLeakToSpaceComponent (phantom leak 10-count adjacency recheck)" -ForegroundColor Green
+# =========================================================================
+# PATCH 5: GoToFloorOrderBlueprintComponent ESC / Cancel / Cleanup Fix
+# =========================================================================
+# Fixes colonist task-giving lockup where Escape key stops working.
+# 1) In OnUserActionInvoked: Intercept CloseWindow and Cancel actions, absorb input, and call RemoveCursor().
+# 2) In RemoveCursor: Unhide colonist window main area, deactivate hero mode if active,
+#    unselect moused-over objects, unselect invalid floors, reset colonist_ = null,
+#    trigger OnObjectNoLongerSelectedInUI, unregister global events, and call OnRemoved.
+# 3) In OnRemoved: Unselect moused-over objects, unselect invalid floors, null out colonist_, and unregister global events.
+# 4) In OnTick: Call RemoveCursor() instead of agent_.CallEvent(OnRemoved) when colonist is no longer valid.
 
-# 4. Save and deploy
+$orderCompType = $mainMod.GetType('World.AI.Pathfinding.GoToOrder.GoToFloorOrderBlueprintComponent')
+$removeCursorMethod = $orderCompType.Methods | Where-Object { $_.Name -eq 'RemoveCursor' }
+$onUserActionMethod = $orderCompType.Methods | Where-Object { $_.Name -eq 'OnUserActionInvoked' }
+$onTickMethod = $orderCompType.Methods | Where-Object { $_.Name -eq 'OnTick' }
+$onRemovedMethod = $orderCompType.Methods | Where-Object { $_.Name -eq 'OnRemoved' }
+
+$colonistField = $orderCompType.Fields | Where-Object { $_.Name -eq 'colonist_' }
+$allMousedOverField = $orderCompType.Fields | Where-Object { $_.Name -eq 'allMousedOverObjects_' }
+$allInvalidFloorsField = $orderCompType.Fields | Where-Object { $_.Name -eq 'allInvalidFloors_' }
+$agentField = $orderCompType.BaseType.Resolve().Fields | Where-Object { $_.Name -eq 'agent_' }
+
+$unselectMousedMethod = $orderCompType.Methods | Where-Object { $_.Name -eq 'UnselectAllMousedOverObjects' }
+$unselectAllMethod = $orderCompType.Methods | Where-Object { $_.Name -eq 'UnselectAll' }
+$unregisterGlobalMethod = $orderCompType.BaseType.Resolve().Methods | Where-Object { $_.Name -eq 'UnregisterAllGlobalEvents' }
+$unregisterGlobalRef = $mainMod.ImportReference($unregisterGlobalMethod)
+
+$userActionParamType = $mainMod.GetType('Starmancer.Agent.Components.Interface.Input.OnUserActionInvokedParameter')
+if ($null -eq $userActionParamType) {
+    $userActionParamType = $mainMod.GetType('Starmancer.UserAction.OnUserActionInvokedParameter')
+}
+$absorbMethod = $userActionParamType.Methods | Where-Object { $_.Name -eq 'AbsorbUserInput' }
+
+$heroModeParamType = $mainMod.GetType('Starmancer.Agent.Components.Colonist.HeroMode.OnQueryHeroModeParameter')
+$queryHeroActiveMethod = ($heroModeParamType.Methods | Where-Object { $_.Name -eq 'Query_isHeroModeActive' })[0]
+
+$baseParamMethod = ($mainMod.GetType('Starmancer.Agent.Components.AgentEventParameter').Methods | Where-Object { $_.Name -eq 'GetBase' })[0]
+$onRemovedParamMethod = ($mainMod.GetType('Starmancer.Agent.Components.World.Placeable.OnRemovedParameter').Methods | Where-Object { $_.Name -eq 'Get' -and $_.Parameters.Count -eq 0 })[0]
+
+$agentType = $mainMod.GetType('Starmancer.Agent.Components.GameObjectAgent')
+$callEventDef = ($agentType.Methods | Where-Object { $_.Name -eq 'CallEvent_ReturnToPool' -and $_.HasGenericParameters -and $_.Parameters.Count -eq 2 })[0]
+$callEventBaseInst = New-Object Mono.Cecil.GenericInstanceMethod($callEventDef)
+$callEventBaseInst.GenericArguments.Add($mainMod.GetType('Starmancer.Agent.Components.AgentEventParameter'))
+
+$callEventRemovedInst = New-Object Mono.Cecil.GenericInstanceMethod($callEventDef)
+$callEventRemovedInst.GenericArguments.Add($mainMod.GetType('Starmancer.Agent.Components.World.Placeable.OnRemovedParameter'))
+
+$eventNameType = $mainMod.GetType('Starmancer.Agent.Components.EventName')
+$opImplicitEventName = ($eventNameType.Methods | Where-Object { $_.Name -eq 'op_Implicit' })[0]
+$fieldHeroDeactivated = $eventNameType.Fields | Where-Object { $_.Name -eq 'OnHeroModeDeactivated' }
+$fieldOnRemoved = $eventNameType.Fields | Where-Object { $_.Name -eq 'OnRemoved' }
+
+$selectionType = $mainMod.GetType('Starmancer.Component.Interface.Cursor.Selection.SelectionType')
+$fieldSelectionDeletion = $selectionType.Fields | Where-Object { $_.Name -eq 'Deletion' }
+
+$callerType = $mainMod.GetType('Starmancer.Agent.Components.GlobalEvent.GlobalEventCaller')
+$callerInstField = $callerType.Fields | Where-Object { $_.Name -eq 'instance' }
+$callGlobalEventDef = ($callerType.Methods | Where-Object { $_.Name -eq 'CallGlobalEvent_ReturnToPool' -and $_.Parameters[0].ParameterType.Name -eq 'GlobalEventName' })[0]
+$callGlobalEventInst = New-Object Mono.Cecil.GenericInstanceMethod($callGlobalEventDef)
+$callGlobalEventInst.GenericArguments.Add($mainMod.GetType('Starmancer.Agent.Components.AgentEventParameter'))
+
+$genType = $mainMod.GetType('Starmancer.Agent.Components.GlobalEvent.GlobalEventName')
+$fieldNoLongerSelected = $genType.Fields | Where-Object { $_.Name -eq 'OnObjectNoLongerSelectedInUI' }
+
+# 1. Re-wire OnUserActionInvoked
+$userActionType = $mainMod.GetType('Starmancer.Agent.Components.Interface.Input.UserActionType')
+$fieldConfirmUp = $userActionType.Fields | Where-Object { $_.Name -eq 'UniversalConfirmUp' }
+$fieldCloseWin = $userActionType.Fields | Where-Object { $_.Name -eq 'CloseWindow' }
+$fieldCancel = $userActionType.Fields | Where-Object { $_.Name -eq 'Cancel' }
+
+$dynamicEnumType = $mainMod.GetType('Starmancer.Engine.DynamicEnum')
+$opEqualityDef = ($dynamicEnumType.Methods | Where-Object { $_.Name -eq 'op_Equality' })[0]
+
+$paramType = $mainMod.GetType('Starmancer.Agent.Components.AgentEventParameter')
+$tryCastDef = ($paramType.Methods | Where-Object { $_.Name -eq 'TryCastParameter' -and $_.HasGenericParameters })[0]
+$tryCastInst = New-Object Mono.Cecil.GenericInstanceMethod($tryCastDef)
+$tryCastInst.GenericArguments.Add($userActionParamType)
+
+$userActionField = $userActionParamType.Fields | Where-Object { $_.Name -eq 'userAction' }
+$createWinMethod = $orderCompType.Methods | Where-Object { $_.Name -eq 'CreateContextTargetWindow' }
+
+$onUserActionMethod.Body.Instructions.Clear()
+$onUserActionMethod.Body.Variables.Clear()
+$var0 = New-Object Mono.Cecil.Cil.VariableDefinition($userActionParamType)
+$onUserActionMethod.Body.Variables.Add($var0)
+
+$ilUA = $onUserActionMethod.Body.GetILProcessor()
+$lblRet = $ilUA.Create([Mono.Cecil.Cil.OpCodes]::Ret)
+$lblCheckCancel = $ilUA.Create([Mono.Cecil.Cil.OpCodes]::Ldloc_0)
+$lblDoCancel = $ilUA.Create([Mono.Cecil.Cil.OpCodes]::Ldloc_0)
+
+$uaInstructions = @(
+    $ilUA.Create([Mono.Cecil.Cil.OpCodes]::Ldarg_1),
+    $ilUA.Create([Mono.Cecil.Cil.OpCodes]::Callvirt, $tryCastInst),
+    $ilUA.Create([Mono.Cecil.Cil.OpCodes]::Stloc_0),
+
+    $ilUA.Create([Mono.Cecil.Cil.OpCodes]::Ldloc_0),
+    $ilUA.Create([Mono.Cecil.Cil.OpCodes]::Brfalse_S, $lblRet),
+
+    $ilUA.Create([Mono.Cecil.Cil.OpCodes]::Ldloc_0),
+    $ilUA.Create([Mono.Cecil.Cil.OpCodes]::Ldfld, $userActionField),
+    $ilUA.Create([Mono.Cecil.Cil.OpCodes]::Ldsfld, $fieldConfirmUp),
+    $ilUA.Create([Mono.Cecil.Cil.OpCodes]::Call, $opEqualityDef),
+    $ilUA.Create([Mono.Cecil.Cil.OpCodes]::Brfalse_S, $lblCheckCancel),
+
+    $ilUA.Create([Mono.Cecil.Cil.OpCodes]::Ldarg_0),
+    $ilUA.Create([Mono.Cecil.Cil.OpCodes]::Call, $createWinMethod),
+    $ilUA.Create([Mono.Cecil.Cil.OpCodes]::Br_S, $lblRet),
+
+    $lblCheckCancel,
+    $ilUA.Create([Mono.Cecil.Cil.OpCodes]::Ldfld, $userActionField),
+    $ilUA.Create([Mono.Cecil.Cil.OpCodes]::Ldsfld, $fieldCloseWin),
+    $ilUA.Create([Mono.Cecil.Cil.OpCodes]::Call, $opEqualityDef),
+    $ilUA.Create([Mono.Cecil.Cil.OpCodes]::Brtrue_S, $lblDoCancel),
+
+    $ilUA.Create([Mono.Cecil.Cil.OpCodes]::Ldloc_0),
+    $ilUA.Create([Mono.Cecil.Cil.OpCodes]::Ldfld, $userActionField),
+    $ilUA.Create([Mono.Cecil.Cil.OpCodes]::Ldsfld, $fieldCancel),
+    $ilUA.Create([Mono.Cecil.Cil.OpCodes]::Call, $opEqualityDef),
+    $ilUA.Create([Mono.Cecil.Cil.OpCodes]::Brfalse_S, $lblRet),
+
+    $lblDoCancel,
+    $ilUA.Create([Mono.Cecil.Cil.OpCodes]::Callvirt, $absorbMethod),
+    $ilUA.Create([Mono.Cecil.Cil.OpCodes]::Ldarg_0),
+    $ilUA.Create([Mono.Cecil.Cil.OpCodes]::Call, $removeCursorMethod),
+    $lblRet
+)
+
+foreach ($inst in $uaInstructions) {
+    $ilUA.Append($inst)
+}
+
+# 2. Re-wire RemoveCursor
+$removeCursorMethod.Body.Instructions.Clear()
+$removeCursorMethod.Body.Variables.Clear()
+$ilRC = $removeCursorMethod.Body.GetILProcessor()
+
+$lblSkipColonist = $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Nop)
+$lblSkipAgentRemove = $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Nop)
+
+$removeCursorInstructions = @(
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Ldarg_0),
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Ldfld, $colonistField),
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Brfalse_S, $lblSkipColonist),
+
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Ldarg_0),
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Ldfld, $colonistField),
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Call, $queryHeroActiveMethod),
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Brfalse_S, $lblSkipColonist),
+
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Ldarg_0),
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Ldfld, $colonistField),
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Ldsfld, $fieldHeroDeactivated),
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Call, $opImplicitEventName),
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Call, $baseParamMethod),
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Callvirt, $callEventBaseInst),
+
+    $lblSkipColonist,
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Ldarg_0),
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Call, $unselectMousedMethod),
+
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Ldarg_0),
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Ldarg_0),
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Ldfld, $allInvalidFloorsField),
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Ldsfld, $fieldSelectionDeletion),
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Call, $unselectAllMethod),
+
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Ldarg_0),
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Ldnull),
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Stfld, $colonistField),
+
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Ldsfld, $callerInstField),
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Ldsfld, $fieldNoLongerSelected),
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Call, $baseParamMethod),
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Callvirt, $callGlobalEventInst),
+
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Ldarg_0),
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Call, $unregisterGlobalRef),
+
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Ldarg_0),
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Ldfld, $agentField),
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Dup),
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Brfalse_S, $lblSkipAgentRemove),
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Ldsfld, $fieldOnRemoved),
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Call, $opImplicitEventName),
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Call, $onRemovedParamMethod),
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Callvirt, $callEventRemovedInst),
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Ret),
+
+    $lblSkipAgentRemove,
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Pop),
+    $ilRC.Create([Mono.Cecil.Cil.OpCodes]::Ret)
+)
+
+foreach ($inst in $removeCursorInstructions) {
+    $ilRC.Append($inst)
+}
+
+# 3. Re-wire OnRemoved
+$onRemovedMethod.Body.Instructions.Clear()
+$onRemovedMethod.Body.Variables.Clear()
+$ilOR = $onRemovedMethod.Body.GetILProcessor()
+$onRemovedInstructions = @(
+    $ilOR.Create([Mono.Cecil.Cil.OpCodes]::Ldarg_0),
+    $ilOR.Create([Mono.Cecil.Cil.OpCodes]::Call, $unselectMousedMethod),
+
+    $ilOR.Create([Mono.Cecil.Cil.OpCodes]::Ldarg_0),
+    $ilOR.Create([Mono.Cecil.Cil.OpCodes]::Ldarg_0),
+    $ilOR.Create([Mono.Cecil.Cil.OpCodes]::Ldfld, $allInvalidFloorsField),
+    $ilOR.Create([Mono.Cecil.Cil.OpCodes]::Ldsfld, $fieldSelectionDeletion),
+    $ilOR.Create([Mono.Cecil.Cil.OpCodes]::Call, $unselectAllMethod),
+
+    $ilOR.Create([Mono.Cecil.Cil.OpCodes]::Ldarg_0),
+    $ilOR.Create([Mono.Cecil.Cil.OpCodes]::Ldnull),
+    $ilOR.Create([Mono.Cecil.Cil.OpCodes]::Stfld, $colonistField),
+
+    $ilOR.Create([Mono.Cecil.Cil.OpCodes]::Ldarg_0),
+    $ilOR.Create([Mono.Cecil.Cil.OpCodes]::Call, $unregisterGlobalRef),
+
+    $ilOR.Create([Mono.Cecil.Cil.OpCodes]::Ret)
+)
+foreach ($inst in $onRemovedInstructions) {
+    $ilOR.Append($inst)
+}
+
+# 4. Re-wire OnTick: if (!IsColonistValid(colonist_)) RemoveCursor(); else ParseAllFloors();
+$isColonistValidMethod = $orderCompType.Methods | Where-Object { $_.Name -eq 'IsColonistValid' }
+$parseFloorsMethod = $orderCompType.Methods | Where-Object { $_.Name -eq 'ParseAllFloors' }
+
+$onTickMethod.Body.Instructions.Clear()
+$onTickMethod.Body.Variables.Clear()
+$ilTick = $onTickMethod.Body.GetILProcessor()
+$lblRet = $ilTick.Create([Mono.Cecil.Cil.OpCodes]::Ret)
+$lblParse = $ilTick.Create([Mono.Cecil.Cil.OpCodes]::Ldarg_0)
+
+$tickInstructions = @(
+    $ilTick.Create([Mono.Cecil.Cil.OpCodes]::Ldarg_0),
+    $ilTick.Create([Mono.Cecil.Cil.OpCodes]::Ldfld, $colonistField),
+    $ilTick.Create([Mono.Cecil.Cil.OpCodes]::Brfalse_S, $lblRet),
+
+    $ilTick.Create([Mono.Cecil.Cil.OpCodes]::Ldarg_0),
+    $ilTick.Create([Mono.Cecil.Cil.OpCodes]::Ldarg_0),
+    $ilTick.Create([Mono.Cecil.Cil.OpCodes]::Ldfld, $colonistField),
+    $ilTick.Create([Mono.Cecil.Cil.OpCodes]::Call, $isColonistValidMethod),
+    $ilTick.Create([Mono.Cecil.Cil.OpCodes]::Brtrue_S, $lblParse),
+
+    $ilTick.Create([Mono.Cecil.Cil.OpCodes]::Ldarg_0),
+    $ilTick.Create([Mono.Cecil.Cil.OpCodes]::Call, $removeCursorMethod),
+    $ilTick.Create([Mono.Cecil.Cil.OpCodes]::Br_S, $lblRet),
+
+    $lblParse,
+    $ilTick.Create([Mono.Cecil.Cil.OpCodes]::Call, $parseFloorsMethod),
+    $lblRet
+)
+
+foreach ($inst in $tickInstructions) {
+    $ilTick.Append($inst)
+}
+
+# Write patched assembly
 $writerParams = New-Object Mono.Cecil.WriterParameters
 $writerParams.WriteSymbols = $false
-$tempOut = Join-Path $managedDir 'StarmancerMod.dll.patched'
+$tempOut = Join-Path $managed 'StarmancerMod.dll.patched'
 $asm.Write($tempOut, $writerParams)
 
 Copy-Item $tempOut $targetDll -Force
+Copy-Item $tempOut (Join-Path $scriptDir 'StarmancerMod.dll.patched') -Force
 Remove-Item $tempOut -Force
 
-Write-Host ""
-Write-Host "SUCCESS! Starmancer has been patched successfully." -ForegroundColor Green
-Write-Host "Your station atmosphere is now fully protected." -ForegroundColor Green
-Write-Host ""
+Write-Host "`nSUCCESS! All 5 patches applied (NaN heat drain + leak counter adjacency + order ESC cancel lockup fix)." -ForegroundColor Green
+Write-Host "Vanilla backup saved to: $backupDll" -ForegroundColor DarkGray

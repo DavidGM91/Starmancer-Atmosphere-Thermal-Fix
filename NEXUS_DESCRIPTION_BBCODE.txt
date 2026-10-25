@@ -1,85 +1,63 @@
-[size=6][b]Starmancer - Atmosphere, Thermal & Phantom Leak Fix[/b][/size]
+[size=6][b]Starmancer Community Engine & Thermal Fix[/b][/size]
+[size=4][b]Permanent fix for the -273°C NaN Room Temperature Freeze, Eternal Space Breaches, and Colonist Task Esc Lockup[/b][/size]
 
-A permanent, standalone fix for Starmancer's most notorious game-breaking bugs: the [b]NaN temperature lock[/b], the [b]-273°C cascading room freeze[/b], and [b]phantom air leaks stuck in save files[/b].
+[b]A standalone, high-performance bytecode community patch for Starmancer that permanently resolves the most notorious game-breaking engine bugs causing station freezes and save file corruption.[/b]
 
-[line]
+---
 
-[size=5][b]Description[/b][/size]
+[size=5][b]The Game-Breaking Bugs Fixed[/b][/size]
 
-If you have spent hours building a station in [i]Starmancer[/i], chances are you have encountered one of these game-ending disasters:
+[size=4][b]1. The NaN Rapid Freeze Bug (-273.15°C Absolute Zero)[/b][/size]
+[list]
+[*] [b]What happens in vanilla:[/b] Whenever a room is depressurized, breached, or newly constructed, the game flow daemon calculates average room temperature by dividing total heat by the number of pressurized tiles. When tiles are 0, [font=Courier New]0.0 / 0.0[/font] produces [font=Courier New]NaN[/font] (Not a Number).
+[*] [b]The Thermal Disaster:[/b] Wall vents and thermal regulators run every single frame (up to 60 times/sec). Because IEEE 754 rules evaluate [font=Courier New]NaN < 1.0f[/font] as false, Unity's [font=Courier New]Mathf.Min[/font] subtracts 1.0°C per tick from the adjacent warm room. Within seconds, living quarters plunge from +21°C down past -50°C, -100°C, and all the way to [b]-273.15°C absolute zero[/b], freezing your colonists to death.
+[*] [b]The Fix:[/b] Prevents division by zero in unpressurized rooms (defaults safely to 21°C), prevents vents from transferring heat against NaN/Infinity tiles, and [b]automatically heals existing saves[/b] by restoring sub-zero corrupted tiles back to 21°C on tick.
+[/list]
+
+[size=4][b]2. The Permanent Space Breach Bug[/b][/size]
+[list]
+[*] [b]What happens in vanilla:[/b] When a wall breaches, the room is marked as leaking atmosphere, and that error state is written directly into your [font=Courier New].save[/font] file. Even after you construct new walls to seal the breach, the vanilla code never re-evaluates physical wall adjacency, leaving the repaired room permanently venting into space forever.
+[*] [b]The Fix:[/b] Adds a live adjacency refresh every 10 ticks, forcing adjacent walls and tiles to re-evaluate physical integrity live in-game so that newly built walls seal the breach immediately.
+[/list]
+
+[size=4][b]3. The Colonist Move Order Esc-Key Cursor Lockup[/b][/size]
+[list]
+[*] [b]What happens in vanilla:[/b] When ordering a colonist to walk/move, the task blueprint component completely ignores the Escape key ([font=Courier New]CloseWindow[/font] / [font=Courier New]Cancel[/font]). Pressing Esc closes the colonist window canvas, causing the game to enter an infinite loop of unregister calls without removing the task cursor. You become permanently trapped in task-order cursor mode.
+[*] [b]The Fix:[/b] Intercepts Escape and Cancel actions at top priority, cleanly deactivates hero mode, removes cursor selections, unregisters global event hooks, and smoothly returns control to the player.
+[/list]
+
+---
+
+[size=5][b]Why Direct Bytecode Patching instead of BepInEx/Doorstop?[/b][/size]
+[list]
+[*] Starmancer's stripped Unity engine runtime lacks [font=Courier New]Module.GetPEKind[/font], which causes BepInEx and Doorstop loaders to crash or fail silently.
+[*] External background polling mods only check rooms once per second (every 60 frames), leaving 59 frames per second where vents can freeze rooms.
+[*] Direct Mono.Cecil bytecode patching modifies the compiled CIL instructions directly inside [font=Courier New]StarmancerMod.dll[/font] — zero background frame polling, zero performance cost, zero dependencies, and 100% stability.
+[/list]
+
+---
+
+[size=5][b]Installation[/b][/size]
+
+[size=4][b]Method 1: Pre-Patched DLL (Easiest — 30 Seconds)[/b][/size]
 [list=1]
-[*] [b]The NaN Temperature Bug[/b]: A newly built room, an airlock cycling, or a meteor breach suddenly displays "NaN" for temperature.
-[*] [b]The -273°C Cascading Deep Freeze[/b]: Heat exchangers and wall vents connected to a glitched room immediately start draining heat from healthy rooms at [b]60°C every second[/b], freezing your colonists, crops, and machines down past absolute zero.
-[*] [b]Phantom Leaks in Save Files[/b]: You patch a hole in the hull with walls and doors, but the game still treats the room as open to the vacuum of space, continuously venting all your air into nothingness.
+[*] Navigate to your game folder:
+[font=Courier New]<Starmancer Game Directory>\Starmancer_Data\Managed\[/font]
+(e.g., [font=Courier New]C:\Program Files (x86)\Steam\steamapps\common\Starmancer\Starmancer_Data\Managed\[/font])
+[*] Rename [font=Courier New]StarmancerMod.dll[/font] to [font=Courier New]StarmancerMod.dll.orig[/font] to keep a safe backup of your vanilla file.
+[*] Copy the patched [font=Courier New]StarmancerMod.dll[/font] from the download into [font=Courier New]Starmancer_Data\Managed\[/font].
+[*] Start Starmancer! Any freezing rooms in existing saves will automatically heal back to 21°C on load.
 [/list]
 
-[b]This mod permanently fixes all three issues directly inside the game code.[/b]
-
-Best of all, [b]it automatically heals existing damaged saves[/b]. If your current campaign is frozen or leaking, loading your save with this fix installed will restore your damaged rooms back to a comfortable [b]21°C[/b] within seconds.
-
-[line]
-
-[size=5][b]Main Features[/b][/size]
-
-[list]
-[*] [b]Fixes the NaN Glitch[/b]: Stops the hidden division-by-zero that corrupts depressurized rooms into NaN.
-[*] [b]Stops the -273°C Deep Freeze[/b]: Protects wall vents and heat exchangers so they never drain heat into glitched or unpressurized rooms.
-[*] [b]Eliminates Phantom Leaks[/b]: Every 10 leak ticks (~5 seconds), leaking rooms now double-check their surrounding walls. If you sealed the breach, the leak stops immediately and clears itself from the save file.
-[*] [b]Auto-Heals Damaged Saves[/b]: You do [b]not[/b] need to start a new game! Loading an existing broken save will safely thaw frozen rooms and repair corrupted tiles back to normal room temperature (21°C).
-[*] [b]100% Standalone & Lightweight[/b]: No BepInEx, Doorstop, or mod loaders required. No background scripts or lag—just clean bytecode fixes that run natively with the game.
-[*] [b]Steam & Achievement Safe[/b]: Does not interfere with Steam achievements or game stability.
-[/list]
-
-[line]
-
-[size=5][b]Installation Instructions[/b][/size]
-
-Choose whichever installation method is easiest for you:
-
-[size=4][b]Option 1: Automated 1-Click Installer (Recommended)[/b][/size]
+[size=4][b]Method 2: One-Click Automated PowerShell Patcher[/b][/size]
 [list=1]
-[*] Download the main mod ZIP from the [b]Files[/b] tab and extract it anywhere (e.g. your Desktop or Downloads folder).
-[*] Double-click [b]apply-fix.bat[/b].
-[*] The installer will automatically locate your Starmancer folder, create a safety backup of your original file ([i]StarmancerMod.dll.orig[/i]), and patch the game in under 2 seconds.
-[*] Launch the game and enjoy your station!
+[*] Extract the patcher zip anywhere on your computer.
+[*] Right-click [font=Courier New]reapply-fix.ps1[/font] and select [b]Run with PowerShell[/b] (or run it via terminal).
+[*] The script automatically creates [font=Courier New]StarmancerMod.dll.orig[/font] and applies all patches in under 2 seconds.
+[*] Whenever Steam updates Starmancer, simply run [font=Courier New]reapply-fix.ps1[/font] again to re-patch the updated game in one click!
 [/list]
 
-[size=4][b]Option 2: Manual Drag-and-Drop[/b][/size]
-[list=1]
-[*] In Steam, right-click [b]Starmancer[/b] in your library -> [b]Manage[/b] -> [b]Browse local files[/b].
-[*] Go into: [b]Starmancer\Starmancer_Data\Managed\[/b]
-[*] Rename the existing [b]StarmancerMod.dll[/b] to [b]StarmancerMod.dll.orig[/b] (this is your vanilla backup).
-[*] From the downloaded ZIP, open the [b]prepatched/[/b] folder (or download the manual zip) and copy [b]StarmancerMod.dll[/b] into [b]Starmancer_Data\Managed\[/b].
-[*] Launch the game!
-[/list]
+---
 
-[line]
-
-[size=5][b]How to Uninstall[/b][/size]
-
-You can revert back to 100% vanilla at any time:
-[list]
-[*] [b]If you used the installer[/b]: Double-click [b]restore-vanilla.bat[/b].
-[*] [b]Manual[/b]: Delete [i]StarmancerMod.dll[/i] and rename [i]StarmancerMod.dll.orig[/i] back to [i]StarmancerMod.dll[/i].
-[*] [b]Steam[/b]: Right-click Starmancer in Steam -> [b]Properties[/b] -> [b]Installed Files[/b] -> [b]Verify integrity of game files[/b].
-[/list]
-
-[line]
-
-[size=5][b]Requirements[/b][/size]
-
-[list]
-[*] [b]Game[/b]: [i]Starmancer[/i] (Vanilla / Steam on Windows).
-[*] [b]Other Mods[/b]: None! No external frameworks, BepInEx, or third-party loaders are needed.
-[*] [b]Save Compatibility[/b]: Fully compatible with existing saves and brand-new games.
-[/list]
-
-[line]
-
-[size=5][b]Shout Outs & Credits[/b][/size]
-
-[list]
-[*] [b]DavidGM91[/b]: For initiating the investigation, testing saves, and making sure this fix was made available to the entire Starmancer community so everyone can enjoy this great game bug-free.
-[*] [b]Antigravity (Google DeepMind)[/b]: The AI coding partner who rolled up its digital sleeves, reverse-engineered the decompiled game assemblies, tracked down the exact mathematical root causes (the 0/0 division in CalculateAverages, the Mathf.Min NaN trap in TransferHeat, and the serialized opening state in AtmosphereLeakToSpaceComponent), and engineered the clean bytecode patches. Machine or not, great pair programming gets great results!
-[*] [b]Ominux Games[/b]: For creating the wonderful universe of [i]Starmancer[/i].
-[/list]
+[size=5][b]Uninstallation[/b][/size]
+Delete [font=Courier New]StarmancerMod.dll[/font] and rename [font=Courier New]StarmancerMod.dll.orig[/font] back to [font=Courier New]StarmancerMod.dll[/font] (or verify integrity of game files through Steam).

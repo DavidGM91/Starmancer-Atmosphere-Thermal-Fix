@@ -1,125 +1,93 @@
-# Starmancer Atmosphere, Thermal & Phantom Leak Fix
+# Starmancer Community Engine & Thermal Fix
 
-[![Game](https://img.shields.io/badge/Game-Starmancer-blue.svg)](https://store.steampowered.com/app/1062000/Starmancer/)
-[![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey.svg)]()
-[![Mod Type](https://img.shields.io/badge/Type-Direct%20Assembly%20Patch-brightgreen.svg)]()
-[![No Mod Loader Needed](https://img.shields.io/badge/Requires-Vanilla%20Game%20Only-orange.svg)]()
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Starmancer](https://img.shields.io/badge/Game-Starmancer-blue.svg)](https://store.steampowered.com/app/1062000/Starmancer/)
+[![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey.svg)](https://store.steampowered.com/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-A standalone bytecode fix that permanently resolves the game-breaking thermal and atmospheric bugs in **Starmancer**:
-
-- 🧊 **The NaN Temperature Bug**: Depressurized or breached rooms trigger a division-by-zero that locks room temperatures to `NaN`.
-- ❄️ **The -273°C Cascading Freeze**: Connected rooms drain heat at 60°C/sec down to absolute zero through heat exchangers/vents when adjacent to a `NaN` room.
-- 💨 **Phantom Leaks in Save Files**: Sealed breaches and enclosed rooms permanently vent atmosphere into space across save/loads.
-- 🩹 **Auto-Heals Corrupted Saves**: Damaged tiles, frozen rooms, and lingering phantom leaks in existing save files automatically repair themselves to 21°C within seconds of loading.
-
-> **Note:** This fix modifies `StarmancerMod.dll` directly at the bytecode level. **No mod loaders (BepInEx, Harmony, Doorstop) are needed**, and there is zero performance impact.
+A high-performance, standalone bytecode community patch for **Starmancer** that permanently fixes 3 game-breaking vanilla engine bugs:
+1. **The NaN Room Temperature Freeze** (rooms plunging to -273.15°C absolute zero).
+2. **Permanent Space Breaches** (repaired rooms eternally leaking atmosphere).
+3. **Colonist Move Order UI Lockup** (Escape key breaking task cursor and trapping the UI).
+4. **Auto-Healing for Existing Corrupted Save Files**.
 
 ---
 
-## 📥 Installation Guide
+## 🔍 The Bugs & Root Causes
 
-Choose either **Method 1 (Automatic, 1-Click)** or **Method 2 (Manual Copy-Paste)**.
-
----
-
-### Method 1: Automated Installer (Recommended — 1-Click)
-
-The automated patcher automatically finds your game directory, creates a safety backup of your original files, and applies the fix in under 2 seconds.
-
-1. **Download the fix**:
-   - Go to the [**Releases**](../../releases) tab and download the latest `Starmancer-Atmosphere-Thermal-Fix.zip` (or click the green **Code** button at the top of this repository -> **Download ZIP**).
-2. **Extract the ZIP** anywhere on your computer (e.g., your Desktop or Downloads folder).
-3. **Double-click `apply-fix.bat`**.
-   - The installer will automatically scan your drives and Steam registry to find your Starmancer installation.
-   - It will automatically create a backup of your original unpatched file (`StarmancerMod.dll.orig`).
-   - It will apply the 4 bytecode patches and display:
-     ```text
-     SUCCESS! Starmancer has been patched successfully.
-     Your station atmosphere is now fully protected.
-     ```
-4. **Launch Starmancer and play!**
-
-> **Troubleshooting:** If your game is installed in a non-standard custom directory, the script will simply ask you to paste your game folder path (e.g., `D:\Games\Steam\steamapps\common\Starmancer`).
+### 1. The NaN Temperature Freeze Bug (`AtmosphereFlowDaemonComponent` & `PeriodicTemperatureExchangerComponent`)
+- **Vanilla Flaw**: In any unpressurized or depressurized space (airlocks, breaches, or newly constructed rooms), the number of pressurized tiles is zero (`num2 == 0`). In `AtmosphereFlowDaemonComponent.CalculateAverages()`, calculating average room temperature divides `totalTemperature / num2`, which results in `0.0 / 0.0 = double.NaN`.
+- **The Cascade**: Connected wall vents and heat pipes run `PeriodicTemperatureExchangerComponent.TransferHeat()` up to 60 times per second. They calculate `Mathf.Min((roomTemp - targetTemp) / 2f, amountOfHeat)`. Under IEEE 754 floating-point rules, comparing `NaN < 1.0f` is always `false`. Consequently, `Mathf.Min` evaluates to `1.0f`, **sucking 1.0°C per tick out of adjacent pressurized rooms**.
+- **Result**: Within seconds, healthy living quarters drop from +21°C to -50°C, -150°C, and all the way down to **-273.15°C (absolute zero)**, freezing colonists and destroying stations.
+- **The Fix**:
+  - Guards `CalculateAverages` so that vacuum defaults safely to 21.0°C instead of dividing by zero.
+  - Injects guards into `PeriodicTemperatureExchangerComponent.TransferHeat` to instantly abort heat transfer if either tile has `NaN` or `Infinity` temperature.
+  - Automatically heals any tile with `NaN` or sub-absolute-zero temperature (`< -273.15°C`) back to 21°C inside `AtmosphereUnit.MoveToAverage()`.
 
 ---
 
-### Method 2: Manual Installation (Drop-In File)
+### 2. The Permanent Space Breach Bug (`AtmosphereLeakToSpaceComponent`)
+- **Vanilla Flaw**: When a room breaches, `AtmosphereLeakToSpaceComponent` checks the 8 surrounding neighbor tiles. If fewer than 8 solid tiles exist, it marks the room as leaking and sets `isLeakingAtmosphere_ = true`. Because these fields are annotated with `[ProtoMember]`, **the leaking status is written directly into your save file**.
+- **The Cascade**: Even after you build walls to seal the breach, `IsLeakValid()` in vanilla only verified `numberOfOpenings_ == 0` without re-evaluating whether walls were completed. The room was permanently stuck leaking into space forever.
+- **The Fix**:
+  - Injects a leak counter (`leakCounter_`) and a live room adjacency refresh (`RefreshRoomAdjacency`).
+  - Every 10 leak ticks, it dispatches an `OnRefreshAdjacentObjects` event to all room tiles, allowing newly placed walls to automatically seal the room live without requiring station demolition.
 
-If you prefer not to run scripts, you can directly replace the game DLL with the pre-patched file included in this repository.
+---
 
-1. **Locate your Starmancer installation folder**:
-   - Open **Steam**.
-   - Right-click **Starmancer** in your library -> **Manage** -> **Browse local files**.
-2. **Navigate to the Managed folder**:
-   ```text
-   Starmancer\Starmancer_Data\Managed\
+### 3. The Colonist Move Order Esc-Key Lockup (`GoToFloorOrderBlueprintComponent`)
+- **Vanilla Flaw**: When ordering a colonist to walk or perform a task (`GoToFloorOrderBlueprintComponent`), `OnUserActionInvoked` only listened for confirmation clicks (`UniversalConfirmUp`) and completely ignored `CloseWindow` and `Cancel` (the `Escape` key).
+- **The Cascade**: Pressing `Esc` closed the colonist window canvas in the background. On the next tick, `IsColonistValid()` failed, causing `OnTick` to enter an infinite loop calling `OnRemoved` without removing the cursor, without unregistering global events, and without deactivating hero mode. The player was permanently locked in task-order cursor mode.
+- **The Fix**:
+  - Rewires `OnUserActionInvoked` to intercept `CloseWindow` and `Cancel` at priority 11.
+  - Absorbs user input cleanly, unselects moused-over objects, clears visual deletion grids, deactivates hero mode, unregisters global event hooks, and cleanly returns the cursor to normal play.
+
+---
+
+## ⚡ Why Mono.Cecil Direct Bytecode Patching?
+
+Unlike other games, Starmancer runs on a stripped Unity Mono runtime where `mscorlib.dll` lacks `Module.GetPEKind`. This causes external mod loaders like **BepInEx** and **Doorstop** to crash or fail silently. Furthermore, background polling mods that only check rooms once per second leave 59 frames per second where vents can freeze rooms.
+
+By patching `StarmancerMod.dll` directly using **Mono.Cecil**:
+- **Zero Overhead**: Injected directly into the compiled CIL bytecode.
+- **Zero Dependencies**: Requires no mod loader, Doorstop, or third-party injector.
+- **Instant Auto-Heal**: Runs on the exact native engine ticks.
+- **Update-Proof**: Includes a one-click PowerShell script (`reapply-fix.ps1`) that backs up `StarmancerMod.dll` to `StarmancerMod.dll.orig` and reapplies the fix in under 2 seconds whenever Steam updates the game.
+
+---
+
+## 📥 Installation
+
+### Method 1: Pre-Patched DLL (Fastest)
+1. Go to your Starmancer managed assemblies directory:
    ```
-3. **Back up the original file**:
-   - Find `StarmancerMod.dll`.
-   - Rename it to:
-     ```text
-     StarmancerMod.dll.orig
-     ```
-4. **Copy the patched file**:
-   - From this repository, open the `prepatched/` folder.
-   - Copy `StarmancerMod.dll` into your game's `Starmancer_Data\Managed\` folder.
-5. **Launch the game!**
+   <Starmancer Install Directory>\Starmancer_Data\Managed\
+   ```
+   *(e.g., `C:\Program Files (x86)\Steam\steamapps\common\Starmancer\Starmancer_Data\Managed\`)*
+2. Rename `StarmancerMod.dll` to `StarmancerMod.dll.orig` (to keep a safe backup).
+3. Copy the patched `StarmancerMod.dll` from this release into `Starmancer_Data\Managed\`.
+4. Launch the game! Any corrupted save files with freezing rooms will automatically heal back to 21°C.
+
+### Method 2: Automated PowerShell Patcher
+If you prefer patching your own local game copy:
+1. Extract the release folder anywhere on your PC.
+2. Open PowerShell as Administrator.
+3. Run:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\reapply-fix.ps1 -GameRoot "C:\Program Files (x86)\Steam\steamapps\common\Starmancer"
+   ```
+4. The script will automatically create `StarmancerMod.dll.orig` and apply all patches in under 2 seconds.
 
 ---
 
-## 🔄 How to Uninstall / Restore Vanilla
+## 🗑️ Uninstallation
 
-To revert back to 100% original vanilla at any time:
-
-- **Automatic**: Double-click **`restore-vanilla.bat`**.
-- **Manual**: Delete `StarmancerMod.dll` from `Starmancer_Data\Managed\` and rename `StarmancerMod.dll.orig` back to `StarmancerMod.dll`.
-- **Via Steam**: In Steam, right-click **Starmancer** -> **Properties** -> **Installed Files** -> **Verify integrity of game files**.
-
----
-
-## ✅ How to Verify the Fix is Working
-
-1. **In Existing Corrupted Saves**:
-   - Load a save file where rooms were stuck at `NaN` or frozen into negative temperatures.
-   - Within 1–5 seconds of unpausing, the tiles and atmosphere will automatically reset to normal room temperature (**21°C**).
-2. **Breaches and Repairs**:
-   - If a room was breached or an airlock opened, sealing the breach with walls or doors will immediately cause the room to stop leaking.
-   - The game will re-test room boundaries every 10 leak cycles (~5s) and cancel the leak permanently once sealed.
-
----
-
-## 🛠️ Summary of Patches Applied
-
-| # | Component & Method | Vanilla Bug | Patched Behavior |
-| :-: | :--- | :--- | :--- |
-| **1** | **`AtmosphereFlowDaemonComponent`**<br>`CalculateAverages` | Divides total room temperature by the count of pressurized floors (`num2`). In depressurized rooms, `num2 == 0`, causing **`0.0 / 0.0 = NaN`**. | Guards against division by zero (`num2 <= 0`). If a room has no gas, sets the average to a safe neutral `21.0°C` instead of NaN. |
-| **2** | **`PeriodicTemperatureExchangerComponent`**<br>`TransferHeat` | Computes temperature delta: `Mathf.Min((temp1 - temp2)/2, 1.0f)`. If one room is NaN, `NaN < 1.0f` is false, returning `1.0f`. It then **subtracts 1.0°C every single tick (60°C/sec)** from the healthy room down past $-273^\circ\text{C}$. | Adds an instant guard: if either room's temperature is `NaN` or `Infinity`, heat transfer aborts immediately (`ret`). |
-| **3** | **`AtmosphereUnit`**<br>`MoveToAverage` | When `!HasPressure()`, unpressurized floors adopt the room's temperature average directly. Once NaN is stored, future math is corrupted forever. | **Sanitizes inputs:** Replaces incoming `NaN`/`Infinity` with `21.0°C`.<br>**Auto-heals existing saves:** If a floor's stored temperature is `NaN` or $< -273.15^\circ\text{C}$, it heals it back to `21.0°C`. |
-| **4** | **`AtmosphereLeakToSpaceComponent`**<br>`OnLeakAtmosphere` & `RefreshRoomAdjacency` | Leaking floors serialize `isLeakingAtmosphere_ = true` and `numberOfOpenings_ > 0` into save files. On load, the game only checks `numberOfOpenings_ == 0` without verifying if space is still open. Repaired rooms leak forever, bleeding air to 0 pressure. | **Periodic Adjacency Retest:** Every 10 leak ticks (~5s), the floor triggers `RefreshRoomAdjacency(room)`, forcing an adjacency check against live walls/doors. If enclosed, the leak halts immediately and zeros out the opening count. |
-
----
-
-## ❓ Frequently Asked Questions (FAQ)
-
-#### Will this disable Steam Achievements?
-**No.** Starmancer does not disable achievements when running modified assemblies.
-
-#### Is this safe for my existing save files?
-**Yes.** In fact, it is specifically designed to heal damaged saves. If your station was already ruined by the NaN temperature bug, loading it with this fix will repair the damaged rooms within seconds.
-
-#### Does this require BepInEx or other mods?
-**No.** It is a standalone, direct assembly patch. It has no external dependencies.
-
-#### What happens if the game updates?
-If Starmancer receives an official update through Steam, Steam will replace `StarmancerMod.dll` with the new official version. You can simply run `apply-fix.bat` again to reapply the fix to the new update.
+To revert to 100% vanilla:
+1. Delete `StarmancerMod.dll` in `Starmancer_Data\Managed\`.
+2. Rename `StarmancerMod.dll.orig` back to `StarmancerMod.dll`.
+*(Or verify integrity of game files via Steam).*
 
 ---
 
 ## 📜 License
 
-This project is licensed under the [MIT License](LICENSE).
-
-## 🤖 AI Disclosure
-
-This project was partially made with Gemini 3.8 Flash using the anti-gravity editor.
+Distributed under the MIT License. See `LICENSE` for more information.

@@ -1,0 +1,63 @@
+[size=6][b]Starmancer Community Engine & Thermal Fix[/b][/size]
+[size=4][b]Permanent fix for the -273°C NaN Room Temperature Freeze, Eternal Space Breaches, and Colonist Task Esc Lockup[/b][/size]
+
+[b]A standalone, high-performance bytecode community patch for Starmancer that permanently resolves the most notorious game-breaking engine bugs causing station freezes and save file corruption.[/b]
+
+---
+
+[size=5][b]The Game-Breaking Bugs Fixed[/b][/size]
+
+[size=4][b]1. The NaN Rapid Freeze Bug (-273.15°C Absolute Zero)[/b][/size]
+[list]
+[*] [b]What happens in vanilla:[/b] Whenever a room is depressurized, breached, or newly constructed, the game flow daemon calculates average room temperature by dividing total heat by the number of pressurized tiles. When tiles are 0, [font=Courier New]0.0 / 0.0[/font] produces [font=Courier New]NaN[/font] (Not a Number).
+[*] [b]The Thermal Disaster:[/b] Wall vents and thermal regulators run every single frame (up to 60 times/sec). Because IEEE 754 rules evaluate [font=Courier New]NaN < 1.0f[/font] as false, Unity's [font=Courier New]Mathf.Min[/font] subtracts 1.0°C per tick from the adjacent warm room. Within seconds, living quarters plunge from +21°C down past -50°C, -100°C, and all the way to [b]-273.15°C absolute zero[/b], freezing your colonists to death.
+[*] [b]The Fix:[/b] Prevents division by zero in unpressurized rooms (defaults safely to 21°C), prevents vents from transferring heat against NaN/Infinity tiles, and [b]automatically heals existing saves[/b] by restoring sub-zero corrupted tiles back to 21°C on tick.
+[/list]
+
+[size=4][b]2. The Permanent Space Breach Bug[/b][/size]
+[list]
+[*] [b]What happens in vanilla:[/b] When a wall breaches, the room is marked as leaking atmosphere, and that error state is written directly into your [font=Courier New].save[/font] file. Even after you construct new walls to seal the breach, the vanilla code never re-evaluates physical wall adjacency, leaving the repaired room permanently venting into space forever.
+[*] [b]The Fix:[/b] Adds a live adjacency refresh every 10 ticks, forcing adjacent walls and tiles to re-evaluate physical integrity live in-game so that newly built walls seal the breach immediately.
+[/list]
+
+[size=4][b]3. The Colonist Move Order Esc-Key Cursor Lockup[/b][/size]
+[list]
+[*] [b]What happens in vanilla:[/b] When ordering a colonist to walk/move, the task blueprint component completely ignores the Escape key ([font=Courier New]CloseWindow[/font] / [font=Courier New]Cancel[/font]). Pressing Esc closes the colonist window canvas, causing the game to enter an infinite loop of unregister calls without removing the task cursor. You become permanently trapped in task-order cursor mode.
+[*] [b]The Fix:[/b] Intercepts Escape and Cancel actions at top priority, cleanly deactivates hero mode, removes cursor selections, unregisters global event hooks, and smoothly returns control to the player.
+[/list]
+
+---
+
+[size=5][b]Why Direct Bytecode Patching instead of BepInEx/Doorstop?[/b][/size]
+[list]
+[*] Starmancer's stripped Unity engine runtime lacks [font=Courier New]Module.GetPEKind[/font], which causes BepInEx and Doorstop loaders to crash or fail silently.
+[*] External background polling mods only check rooms once per second (every 60 frames), leaving 59 frames per second where vents can freeze rooms.
+[*] Direct Mono.Cecil bytecode patching modifies the compiled CIL instructions directly inside [font=Courier New]StarmancerMod.dll[/font] — zero background frame polling, zero performance cost, zero dependencies, and 100% stability.
+[/list]
+
+---
+
+[size=5][b]Installation[/b][/size]
+
+[size=4][b]Method 1: Pre-Patched DLL (Easiest — 30 Seconds)[/b][/size]
+[list=1]
+[*] Navigate to your game folder:
+[font=Courier New]<Starmancer Game Directory>\Starmancer_Data\Managed\[/font]
+(e.g., [font=Courier New]C:\Program Files (x86)\Steam\steamapps\common\Starmancer\Starmancer_Data\Managed\[/font])
+[*] Rename [font=Courier New]StarmancerMod.dll[/font] to [font=Courier New]StarmancerMod.dll.orig[/font] to keep a safe backup of your vanilla file.
+[*] Copy the patched [font=Courier New]StarmancerMod.dll[/font] from the download into [font=Courier New]Starmancer_Data\Managed\[/font].
+[*] Start Starmancer! Any freezing rooms in existing saves will automatically heal back to 21°C on load.
+[/list]
+
+[size=4][b]Method 2: One-Click Automated PowerShell Patcher[/b][/size]
+[list=1]
+[*] Extract the patcher zip anywhere on your computer.
+[*] Right-click [font=Courier New]reapply-fix.ps1[/font] and select [b]Run with PowerShell[/b] (or run it via terminal).
+[*] The script automatically creates [font=Courier New]StarmancerMod.dll.orig[/font] and applies all patches in under 2 seconds.
+[*] Whenever Steam updates Starmancer, simply run [font=Courier New]reapply-fix.ps1[/font] again to re-patch the updated game in one click!
+[/list]
+
+---
+
+[size=5][b]Uninstallation[/b][/size]
+Delete [font=Courier New]StarmancerMod.dll[/font] and rename [font=Courier New]StarmancerMod.dll.orig[/font] back to [font=Courier New]StarmancerMod.dll[/font] (or verify integrity of game files through Steam).
